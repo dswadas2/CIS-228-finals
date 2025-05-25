@@ -33,8 +33,15 @@ class GestureMusicAppState extends State<GestureMusicApp> {
   
   // Gesture detection variables
   StreamSubscription<UserAccelerometerEvent>? _accelerometerSubscription;
+  StreamSubscription<AccelerometerEvent>? _regularAccelerometerSubscription;
   DateTime _lastGestureTime = DateTime.now();
-  static const int gestureDelay = 1000; // 1 second delay between gestures
+  static const int gestureDelay = 500; // Reduced to 500ms for better responsiveness
+  
+  // Debug variables
+  bool _debugMode = true;
+  String _lastGestureDebug = "None";
+  bool _sensorAvailable = false;
+  String _sensorType = "None";
 
   @override
   void initState() {
@@ -46,63 +53,142 @@ class GestureMusicAppState extends State<GestureMusicApp> {
   }
 
   void _initializeGestureDetection() {
-    // Cancel any existing subscription
+    // Cancel any existing subscriptions
     _accelerometerSubscription?.cancel();
+    _regularAccelerometerSubscription?.cancel();
     
-    // Set up accelerometer listener with proper error handling
+    // Try user accelerometer first
     _accelerometerSubscription = userAccelerometerEvents.listen(
       (UserAccelerometerEvent event) {
-        _handleGesture(event);
+        if (!_sensorAvailable) {
+          setState(() {
+            _sensorAvailable = true;
+            _sensorType = "User Accelerometer";
+          });
+        }
+        _handleUserAccelerometerGesture(event);
       },
       onError: (error) {
-        print("Accelerometer error: $error");
+        print("User Accelerometer error: $error");
+        setState(() {
+          _sensorType = "User Accelerometer Failed";
+        });
+        _accelerometerSubscription?.cancel();
+        _tryRegularAccelerometer();
+      },
+      cancelOnError: true,
+    );
+    
+    // Give user accelerometer a chance, then try regular accelerometer as fallback
+    Future.delayed(Duration(seconds: 2), () {
+      if (!_sensorAvailable) {
+        _tryRegularAccelerometer();
+      }
+    });
+  }
+  
+  void _tryRegularAccelerometer() {
+    print("Trying regular accelerometer as fallback...");
+    _regularAccelerometerSubscription = accelerometerEvents.listen(
+      (AccelerometerEvent event) {
+        if (!_sensorAvailable) {
+          setState(() {
+            _sensorAvailable = true;
+            _sensorType = "Regular Accelerometer";
+          });
+        }
+        _handleRegularAccelerometerGesture(event);
+      },
+      onError: (error) {
+        print("Regular Accelerometer error: $error");
+        setState(() {
+          _sensorType = "No Accelerometer Available";
+          _lastGestureDebug = "Sensor not available - try touch controls";
+        });
       },
       cancelOnError: false,
     );
   }
 
-  void _handleGesture(UserAccelerometerEvent event) {
+  void _handleUserAccelerometerGesture(UserAccelerometerEvent event) {
+    _handleGestureCommon(event.x, event.y, event.z);
+  }
+  
+  void _handleRegularAccelerometerGesture(AccelerometerEvent event) {
+    _handleGestureCommon(event.x, event.y, event.z);
+  }
+  
+  void _handleGestureCommon(double x, double y, double z) {
     // Prevent rapid gesture triggers
     DateTime now = DateTime.now();
     if (now.difference(_lastGestureTime).inMilliseconds < gestureDelay) {
       return;
     }
-
-    double x = event.x;
-    double y = event.y;
-    double z = event.z;
     
     // Calculate total acceleration (magnitude)
     double totalAcceleration = sqrt(x * x + y * y + z * z);
     
-    print("Accelerometer: X=$x, Y=$y, Z=$z, Total=$totalAcceleration");
+    if (_debugMode) {
+      print("Accelerometer: X=${x.toStringAsFixed(2)}, Y=${y.toStringAsFixed(2)}, Z=${z.toStringAsFixed(2)}, Total=${totalAcceleration.toStringAsFixed(2)}");
+    }
 
+    // Lower thresholds for better sensitivity
     // Detect shake gesture (strong acceleration in any direction)
-    if (totalAcceleration > 15.0) {
+    if (totalAcceleration > 12.0) { // Reduced from 15.0
       _lastGestureTime = now;
+      setState(() {
+        _lastGestureDebug = "Shake detected (${totalAcceleration.toStringAsFixed(2)})";
+      });
       print("Strong shake detected - toggling play/pause");
       _togglePlayPause();
       return;
     }
 
     // Detect directional gestures with lower thresholds
-    if (z.abs() > 8.0) {
+    if (x.abs() > 4.0) { // Reduced from 6.0
       _lastGestureTime = now;
-      if (z > 8.0) {
-        print("Phone tilted up - playing");
-        playAudio();
-      } else {
-        print("Phone tilted down - pausing");
-        pauseAudio();
-      }
-    } else if (x.abs() > 6.0) {
-      _lastGestureTime = now;
-      if (x > 6.0) {
+      if (x > 4.0) {
+        setState(() {
+          _lastGestureDebug = "Tilt right (${x.toStringAsFixed(2)})";
+        });
         print("Phone tilted right - next song");
         playNextSong();
       } else {
+        setState(() {
+          _lastGestureDebug = "Tilt left (${x.toStringAsFixed(2)})";
+        });
         print("Phone tilted left - previous song");
         playPreviousSong();
+      }
+    } else if (y.abs() > 4.0) { // Added Y-axis detection
+      _lastGestureTime = now;
+      if (y > 4.0) {
+        setState(() {
+          _lastGestureDebug = "Tilt forward (${y.toStringAsFixed(2)})";
+        });
+        print("Phone tilted forward - playing");
+        playAudio();
+      } else {
+        setState(() {
+          _lastGestureDebug = "Tilt backward (${y.toStringAsFixed(2)})";
+        });
+        print("Phone tilted backward - pausing");
+        pauseAudio();
+      }
+    } else if (z.abs() > 4.0) { // Reduced from 8.0
+      _lastGestureTime = now;
+      if (z > 4.0) {
+        setState(() {
+          _lastGestureDebug = "Face up (${z.toStringAsFixed(2)})";
+        });
+        print("Phone face up - playing");
+        playAudio();
+      } else {
+        setState(() {
+          _lastGestureDebug = "Face down (${z.toStringAsFixed(2)})";
+        });
+        print("Phone face down - pausing");
+        pauseAudio();
       }
     }
   }
@@ -296,6 +382,7 @@ class GestureMusicAppState extends State<GestureMusicApp> {
   @override
   void dispose() {
     _accelerometerSubscription?.cancel();
+    _regularAccelerometerSubscription?.cancel();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -324,6 +411,15 @@ class GestureMusicAppState extends State<GestureMusicApp> {
                 color: isLooping ? Colors.orange : Colors.white),
               onPressed: toggleLoop,
             ),
+            IconButton(
+              icon: Icon(_debugMode ? Icons.bug_report : Icons.bug_report_outlined,
+                color: _debugMode ? Colors.green : Colors.white),
+              onPressed: () {
+                setState(() {
+                  _debugMode = !_debugMode;
+                });
+              },
+            ),
           ],
         ),
         body: Padding(
@@ -338,6 +434,26 @@ class GestureMusicAppState extends State<GestureMusicApp> {
 
               const SizedBox(height: 20),
 
+              // Debug info
+              if (_debugMode)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  margin: const EdgeInsets.only(bottom: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    children: [
+                      Text("Debug Mode", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                      Text("Sensor: $_sensorType", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                      Text("Available: ${_sensorAvailable ? 'Yes' : 'No'}", style: TextStyle(fontSize: 14, color: _sensorAvailable ? Colors.green : Colors.red)),
+                      Text("Last Gesture: $_lastGestureDebug", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                      Text("Check console for detailed accelerometer data", style: TextStyle(fontSize: 12, color: Colors.white60)),
+                    ],
+                  ),
+                ),
+
               // Gesture instructions
               Container(
                 padding: const EdgeInsets.all(12),
@@ -350,10 +466,12 @@ class GestureMusicAppState extends State<GestureMusicApp> {
                   children: [
                     Text("Gesture Controls:", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
                     Text("• Shake strongly: Play/Pause", style: TextStyle(fontSize: 14, color: Colors.white70)),
-                    Text("• Tilt up: Play", style: TextStyle(fontSize: 14, color: Colors.white70)),
-                    Text("• Tilt down: Pause", style: TextStyle(fontSize: 14, color: Colors.white70)),
-                    Text("• Tilt right: Next song", style: TextStyle(fontSize: 14, color: Colors.white70)),
                     Text("• Tilt left: Previous song", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                    Text("• Tilt right: Next song", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                    Text("• Tilt forward: Play", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                    Text("• Tilt backward: Pause", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                    Text("• Face up: Play", style: TextStyle(fontSize: 14, color: Colors.white70)),
+                    Text("• Face down: Pause", style: TextStyle(fontSize: 14, color: Colors.white70)),
                   ],
                 ),
               ),
